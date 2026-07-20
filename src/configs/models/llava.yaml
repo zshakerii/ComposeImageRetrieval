@@ -1,0 +1,11 @@
+# ─────────────────────────────────────────────
+# مدل‌ها  (هر کدام فقط تفاوت‌های خود را دارد)
+# ─────────────────────────────────────────────
+models:
+  llava:
+    backbone: llava-v1.6-mistral-7b
+    embed_dim: 4096
+    composer: mllm_caption      # کپشن تولید می‌کند سپس retrieval
+    checkpoint: llava/llava_v16.pt
+    max_new_tokens: 64
+    prompt_template: "Describe the target image given the reference and instruction."

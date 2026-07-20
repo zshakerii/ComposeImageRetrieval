@@ -1,0 +1,16 @@
+
+# ─────────────────────────────────────────────
+# دیتاست‌ها
+# ─────────────────────────────────────────────
+datasets:
+  cirr:
+    root: data/datasets/cirr
+    split: val               # train | val | test
+    annotations: captions/cap.rc2.val.json
+    image_dir: images
+
+  circo:
+    root: data/datasets/circo
+    split: val
+    annotations: annotations/val.json
+    image_dir: images

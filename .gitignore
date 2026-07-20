@@ -205,3 +205,26 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+
+# NLVR files and folders
+nlvr/
+**/nlvr/
+nlvr*
+**/nlvr*
+
+
+# circo files and folders
+circo/
+**/circo/
+circo*
+**/circo*
+
+
+
+# models_download files and folders
+models_download/
+**/models_download/
+models_download*
+**/models_download*

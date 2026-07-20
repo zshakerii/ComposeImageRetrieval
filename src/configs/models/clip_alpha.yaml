@@ -1,0 +1,6 @@
+backbone: ViT-L-14
+pretrained: openai
+embed_dim: 768
+composer: weighted_sum
+alpha: 0.75                # وزن تصویر در برابر متن
+checkpoint: null

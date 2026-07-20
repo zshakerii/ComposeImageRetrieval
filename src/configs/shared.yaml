@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────
+# تنظیمات مشترک بین همه مدل‌ها و آزمایش‌ها
+# ─────────────────────────────────────────────
+defaults:
+  device: cuda            # یا cpu
+  batch_size: 32
+  num_workers: 4
+  seed: 42
+  precision: fp16         # fp32 | fp16 | bf16
+  image_size: 224
+  normalize_embeddings: true   # L2-normalize قبل از شباهت
+  similarity: cosine           # cosine | dot | euclidean
+
+  # مسیرها
+  paths:
+    checkpoints: experiments/checkpoints
+    results: experiments/results
+    logs: experiments/logs
+
+  # معیارهای ارزیابی
+  metrics:
+    recall_k: [1, 5, 10, 50]
+    map_k: [5, 10, 25, 50]
+    precision_k: [1, 5, 10]

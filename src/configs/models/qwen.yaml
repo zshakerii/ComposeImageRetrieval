@@ -1,0 +1,6 @@
+backbone: Qwen2-VL-7B-Instruct
+embed_dim: 3584
+composer: mllm_caption
+checkpoint: qwen/qwen2_vl.pt
+max_new_tokens: 64
+prompt_template: "Given the reference image and the modification, describe the target."

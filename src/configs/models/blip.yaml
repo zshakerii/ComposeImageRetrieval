@@ -1,0 +1,6 @@
+backbone: blip2-opt-2.7b
+embed_dim: 256
+composer: cross_attention
+checkpoint: blip/blip2.pt
+max_text_len: 40
+

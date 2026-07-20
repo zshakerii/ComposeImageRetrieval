@@ -1,0 +1,9 @@
+searle:
+  searle_dir: "./models_download/SEARLE"
+  backbone: "ViT-L/14"
+  source: "local"
+#pretrained: openai
+#embed_dim: 768
+#composer: textual_inversion
+#checkpoint: searle/searle_vitl14.pt
+#inversion_tokens: 1

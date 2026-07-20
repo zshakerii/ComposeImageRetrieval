@@ -1,0 +1,14 @@
+[
+  {
+    "reference_img_id": "1",
+    "relative_caption": "same object but in blue color",
+    "target_img_id": "2",
+    "gt_img_ids": ["2", "3"]
+  },
+  {
+    "reference_img_id": "2",
+    "relative_caption": "same scene with more brightness",
+    "target_img_id": "3",
+    "gt_img_ids": ["3"]
+  }
+]

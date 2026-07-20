@@ -1,0 +1,6 @@
+ckbone: ViT-L-14
+pretrained: openai
+embed_dim: 768
+composer: text_image_sum   # روش ترکیب متن و تصویر
+checkpoint: null           # از وزن pretrained استفاده کن
+

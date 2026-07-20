@@ -1,0 +1,15 @@
+# ─────────────────────────────────────────────
+# تعریف آزمایش‌ها  (ترکیب مدل × دیتاست)
+# ─────────────────────────────────────────────
+experiments:
+  - name: clip_cirr
+    model: clip
+    dataset: cirr
+
+  - name: searle_circo
+    model: searle
+    dataset: circo
+
+  - name: siglip_cirr
+    model: siglip
+    dataset: cirr

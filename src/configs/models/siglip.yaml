@@ -1,0 +1,7 @@
+backbone: ViT-SO400M-14-SigLIP
+pretrained: webli
+embed_dim: 1152
+composer: text_image_sum
+checkpoint: null
+image_size: 384            # override مقدار پیش‌فرض
+similarity: dot            # SigLIP با sigmoid آموزش دیده
