@@ -102,7 +102,7 @@ def init_results():
         "mrr": [],
     }
 
-
+'''
 def average_precision_at_k(relevant, retrieved, k):
     retrieved_k = retrieved[:k]
     score = 0.0
@@ -114,6 +114,17 @@ def average_precision_at_k(relevant, retrieved, k):
     if len(relevant) == 0:
         return 0.0
     return score / min(len(relevant), k)
+'''
+def average_precision_at_k(relevant, retrieved, k):
+    relevant_set = set(relevant)  # O(1) lookup
+    retrieved_k = retrieved[:k]
+    score, num_hits = 0.0, 0.0
+    for i, img in enumerate(retrieved_k, start=1):
+        if img in relevant_set:
+            num_hits += 1.0
+            score += num_hits / i
+    return 0.0 if not relevant else score / min(len(relevant), k)
+
 
 
 def mean_reciprocal_rank(relevant, retrieved):
@@ -181,8 +192,8 @@ def load_generated_captions(json_path):
     # حالت list
     if isinstance(data, list):
         # کلیدهای محتمل برای شناسه‌ی تصویر و متن
-        id_keys = ("image_id", "img_id", "reference_img_id", "id", "reference")
-        cap_keys = ("caption", "generated_caption", "text")
+        id_keys = ("image_id", "img_id", "reference_img_id", "reference", "id")
+        cap_keys = ("caption", "relative_caption", "generated_caption", "text")
 
         for entry in data:
             if not isinstance(entry, dict):
@@ -208,20 +219,35 @@ def load_generated_captions(json_path):
             captions[img_id] = caption
         return captions
 
-    elif isinstance(data, list):
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            img_id = (
-                    item.get("reference")
-                    or item.get("image_id")
-                    or item.get("img_id")
-                    or item.get("id")
-                    or item.get("reference_img_id")
-            )
-            if img_id is None:
-                continue
-            captions[str(img_id)] = item.get("caption", "")
+
+    elif isinstance(data, dict):
+
+        for key, value in data.items():
+
+            img_id = os.path.splitext(str(key))[0]
+
+            if isinstance(value, dict):
+
+                caption = ""
+
+                for k in cap_keys:
+
+                    if value.get(k):
+                        caption = value[k]
+
+                        break
+
+                captions[img_id] = caption
+
+            elif isinstance(value, str):
+
+                captions[img_id] = value
+
+            else:
+
+                captions[img_id] = ""
+
+        return captions
 
     raise ValueError(f"فرمت ناشناخته‌ی generated captions: {type(data)}")
 
@@ -795,14 +821,15 @@ def rank_by_similarity(query_feat, gallery_feats):
 
 
 def update_metrics(results, ranked_ids, positives):
+    n_pos = len(positives)
     for k in K_VALUES:
         top_k = ranked_ids[:k]
         hits = sum(1 for img in top_k if img in positives)
-        results["prec"][k].append(hits / k)
-        results["rec"][k].append(hits / len(positives))
+        results["prec"][k].append(hits / k if k else 0.0)
+        results["rec"][k].append(hits / n_pos if n_pos else 0.0)
 
-    results["map"][5].append(average_precision_at_k(positives, ranked_ids, 5))
-    results["map"][10].append(average_precision_at_k(positives, ranked_ids, 10))  # اضافه شدن map@10
+    for k in MAP_K_VALUES:
+        results["map"][k].append(average_precision_at_k(positives, ranked_ids, k))
     results["mrr"].append(mean_reciprocal_rank(positives, ranked_ids))
 
 
@@ -1114,15 +1141,20 @@ def main():
 
     dataset_type = args.dataset
 
-    need_clip_cache = ("clip" in args.models) or ("searle" in args.models) or ("clip_sep" in args.models) or ("clip_beta" in args.models)
+    need_clip_cache = any(m in args.models for m in ("clip", "searle", "clip_sep", "clip_beta"))
+    need_open_clip = "open_clip" in args.models
 
-    image_features_cache = None
-    image_features_cache_raw = None
+    clip_model = preprocess = None
+    open_clip_model = open_clip_preprocess = None
+    image_features_cache = image_features_cache_raw = None
+    gallery_ids = gallery_feats = None
 
+    if need_open_clip:
+        print("🔄 بارگذاری مدل open_clip ...")
+        open_clip_model, open_clip_preprocess = load_open_clip_model()
     if need_clip_cache:
         print("🔄 بارگذاری مدل CLIP...")
         clip_model, preprocess = load_clip_model()
-        ...
         image_features_cache, image_features_cache_raw = build_clip_image_cache(
             image_ids, args.image_folder, clip_model, preprocess, dataset_type
         )
@@ -1389,7 +1421,7 @@ def main():
     print(f"📋 جدول مقایسه‌ای {args.dataset.upper()} (Open-set)")
     print("=" * 140)
 
-    header = f"{'Model/Alpha':<20} {'MRR':<10} {'mAP@5':<10} {'mAP@10':<10} {'Prec@1':<10} {'Prec@5':<10} {'Prec@10':<10} {'Rec@1':<10} {'Rec@5':<10} {'Rec@10':<10}"
+    header = f"{'Model/Alpha':<20} {'MRR':<9} {'mAP@5':<9} {'mAP@10':<9} {'mAP@50':<9} {'Prec@1':<9} {'Prec@5':<9} {'Prec@10':<9} {'Prec@50':<9} {'Rec@1':<9} {'Rec@5':<9} {'Rec@10':<9} {'Rec@50':<9}"
     print(header)
     print("-" * len(header))
 
@@ -1401,9 +1433,9 @@ def main():
             if key in all_results:
                 r = all_results[key]
                 print(
-                    f"{key:<20} {r['mrr']:<10.4f} {r['map5']:<10.4f} {r['map10']:<10.4f} "
-                    f"{r['prec1']:<10.4f} {r['prec5']:<10.4f} {r['prec10']:<10.4f} "
-                    f"{r['rec1']:<10.4f} {r['rec5']:<10.4f} {r['rec10']:<10.4f}")
+                    f"{key:<20} {r['mrr']:<9f} {r['map5']:<9f} {r['map10']:<9f} {r['map50']:<9f} "
+                    f"{r['prec1']:<9f} {r['prec5']:<9f} {r['prec10']:<9f} {r['prec50']:<9f} "
+                    f"{r['rec1']:<9f} {r['rec5']:<9f} {r['rec10']:<9f} {r['rec10']:<9f} {r['rec50']:<9f}")
 
     for model_name in ["Searle", "Qwen", "Blip", "LLaVA","SigLIP", "clip_sep"]:
         if model_name in all_results:
