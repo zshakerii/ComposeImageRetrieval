@@ -1,4 +1,5 @@
-import os
+
+ccxdtu86wsea`11244import os
 import json
 import atexit
 from typing import List, Tuple, Dict
@@ -7,12 +8,13 @@ import torch
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
-# ============================
+# ============================srtu
 # Settings
 # ============================
 MODEL_NAME = r"./models_download/Qwen2-VL-2B-Instruct"
-IMAGE_FOLDER = "./nlvr/nlvr2/images/test1"
-OUTPUT_JSON = "./generateCaption/generated_captions.json"
+#IMAGE_FOLDER = "./nlvr/nlvr2/images/test1"
+IMAGE_FOLDER = "./circo/coco2017_unlabeled/unlabeled2017"
+OUTPUT_JSON = "./generateCaption/generated_captions_CIRCO.json"
 
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
 MAX_NEW_TOKENS = 64

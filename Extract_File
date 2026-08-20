@@ -1,0 +1,13 @@
+import pandas as pd
+
+file_path = "./test-00000-of-00001.parquet"
+
+df = pd.read_parquet(file_path, engine="pyarrow")
+
+print("Rows:", len(df))
+print("Columns:")
+for col in df.columns:
+    print(" -", col)
+
+print("\nData types:")
+print(df.dtypes)

@@ -21,43 +21,32 @@ K_VALUES = [1, 5, 10,50]
 # ===============================
 # Dataset Parsers
 # ===============================
+
 def parse_cirr_sample(sample):
-    reference_id = os.path.splitext(sample.get("reference", ""))[0]
-    caption = sample.get("caption", "").strip()
-    members = [os.path.splitext(m)[0] for m in sample.get("img_set", {}).get("members", [])]
-    ref_index = sample.get("img_set", {}).get("reference_rank", 0)
-
-    if not reference_id or not caption or not members or ref_index >= len(members):
-        return None
-
-    target_id = members[ref_index]
+    reference_id = os.path.splitext(sample["reference"])[0]
+    #target_id    = os.path.splitext(sample["target_hard"])[0]   # ← منبع درست
+    target_id    = os.path.splitext(sample["target_hard"])[0]   # ← منبع درست
+    members = [os.path.splitext(m)[0]
+               for m in sample.get("img_set", {}).get("members", [])]
     return {
         "reference_id": reference_id,
-        "caption": caption,
+        "caption": sample.get("caption", "").strip(),
         "target_id": target_id,
-        "members": members,
+        "positives": [target_id],      # CIRR: تک target
+        "members": members,            # فقط برای پروتکل subset
     }
 
 
 def parse_circo_sample(sample):
-    reference_id = sample.get("reference_img_id")
-    caption = sample.get("relative_caption", "").strip()
-    target_id = sample.get("target_img_id")
-    gt_ids = sample.get("gt_img_ids", [])
-
-    if reference_id is not None:
-        reference_id = str(reference_id)
-    if target_id is not None:
-        target_id = str(target_id)
-    gt_ids = [str(x) for x in gt_ids]
-
-    if not reference_id or not caption or not target_id:
-        return None
-
+    gt_ids = [str(x) for x in sample.get("gt_img_ids", [])]
+    target_id = str(sample.get("target_img_id"))
+    if target_id not in gt_ids:
+        gt_ids = [target_id] + gt_ids
     return {
-        "reference_id": reference_id,
-        "caption": caption,
+        "reference_id": str(sample.get("reference_img_id")),
+        "caption": sample.get("relative_caption", "").strip(),
         "target_id": target_id,
+        "positives": gt_ids,          # ← همهٔ groundtruthها
         "members": gt_ids,
     }
 
@@ -814,10 +803,20 @@ def stack_feature_cache(image_feature_cache):
 # ===============================
 # Ranking
 # ===============================
+
+'''
 def rank_by_similarity(query_feat, gallery_feats):
     sims = torch.matmul(gallery_feats, query_feat.squeeze(0).float().T).squeeze(-1)
     ranked_idx = torch.argsort(sims, descending=True)
     return ranked_idx.cpu().tolist()
+'''
+def rank_by_similarity(gallery_feats, gallery_ids, query_feat, exclude_id=None, id2idx=None):
+    sims = torch.matmul(gallery_feats, query_feat.squeeze(0).float().T).squeeze(-1)
+    if exclude_id is not None and id2idx is not None:      # ← اضافه شود
+        mask_reference_(sims, id2idx, exclude_id)
+    ranked_idx = torch.argsort(sims, descending=True)      # خط 804
+    return [gallery_ids[i] for i in ranked_idx]            # خط 805
+
 
 
 def update_metrics(results, ranked_ids, positives):
@@ -836,6 +835,42 @@ def update_metrics(results, ranked_ids, positives):
 # ===============================
 # Evaluators
 # ===============================
+
+def build_id2idx(gallery_ids):
+    return {gid: i for i, gid in enumerate(gallery_ids)}
+
+def mask_reference_(sims, id2idx, ref_id):
+    """امتیاز تصویر مرجع را بی‌اثر می‌کند (in-place)."""
+    idx = id2idx.get(ref_id)
+    if idx is not None:
+        sims[idx] = -float("inf")
+    return sims
+
+def build_id_index(gallery_ids):
+    return {str(g): i for i, g in enumerate(gallery_ids)}
+
+def rank_from_sims(sims, gallery_ids, id2idx,
+                   exclude_ids=(), restrict_ids=None):
+    """sims: 1-D tensor هم‌طول gallery_ids"""
+    sims = sims.detach().float().clone().squeeze()
+
+    if restrict_ids is not None:                   # پروتکل subset در CIRR
+    if restrict_ids is not None:                   # پروتکل subset در CIRR
+        mask = torch.full_like(sims, float("-inf"))
+        for rid in restrict_ids:
+            j = id2idx.get(str(rid))
+            if j is not None:
+                mask[j] = sims[j]
+        sims = mask
+
+    for ex in exclude_ids:                         # حذف تصویر مرجع
+        j = id2idx.get(str(ex))
+        if j is not None:
+            sims[j] = float("-inf")
+
+    order = torch.argsort(sims, descending=True).cpu().tolist()
+    return [gallery_ids[i] for i in order if sims[i] != float("-inf")]
+
 def evaluate_clip_alphas(data, clip_model, image_features_cache, gallery_ids, gallery_feats, alphas):
     text_cache = {}
     results_by_alpha = {}
@@ -855,7 +890,7 @@ def evaluate_clip_alphas(data, clip_model, image_features_cache, gallery_ids, ga
         for item in tqdm(data, desc=f"CLIP alpha={alpha:.2f}"):
             reference_id = item["reference_id"]
             target_id = item["target_id"]
-            positives = {target_id}
+            positives = set(item.get("positives") or [item["target_id"]])
             caption_full = "a photo of " + item["caption"]
 
             text_feat = text_cache.get((reference_id, caption_full))
@@ -868,10 +903,18 @@ def evaluate_clip_alphas(data, clip_model, image_features_cache, gallery_ids, ga
             sims_txt = torch.matmul(gallery_feats, text_feat.squeeze(0).float().T)
             sims_ref = torch.matmul(gallery_feats, ref_feat.squeeze(0).float().T)
             sims = alpha * sims_txt + (1.0 - alpha) * sims_ref
-            ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
-            ranked_ids = [gallery_ids[i] for i in ranked_idx]
+            mask_reference_(sims, id2idx, item["reference_id"])  # ← خط جدید
+            ranked_idx = torch.argsort(sims, descending=True)
+            #ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
+            #ranked_ids = [gallery_ids[i] for i in ranked_idx]
+            ranked_ids = rank_from_sims(
+                sims, gallery_ids, id2idx,
+                exclude_ids=[item["reference_id"]],
+                restrict_ids=item["members"] if SUBSET_PROTOCOL else None,
+            )
 
             update_metrics(results, ranked_ids, positives)
+
             total += 1
 
         results_by_alpha[alpha] = (results, total, skipped)
@@ -915,7 +958,7 @@ def evaluate_clip_beta(data, clip_model, image_features_cache,
 
             for item in tqdm(data, desc=f"clip_beta a={alpha:.2f} b={beta:.2f}"):
                 reference_id = item["reference_id"]
-                positives = {item["target_id"]}
+                positives = set(item.get("positives") or [item["target_id"]])
                 rel_caption = "a photo of " + item["caption"]
 
                 t_rel = rel_text_cache.get(rel_caption)
@@ -940,8 +983,9 @@ def evaluate_clip_beta(data, clip_model, image_features_cache,
                 s1 = torch.matmul(gallery_feats, q1.squeeze(0).float().T)
                 s2 = torch.matmul(gallery_feats, q2.squeeze(0).float().T)
                 sims = alpha * s1 + (1.0 - alpha) * s2
-
-                ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
+                mask_reference_(sims, id2idx, item["reference_id"])  # ← خط جدید
+                ranked_idx = torch.argsort(sims, descending=True)  # خط 929
+                #ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
                 ranked_ids = [gallery_ids[i] for i in ranked_idx]
 
                 update_metrics(results, ranked_ids, positives)
@@ -961,7 +1005,7 @@ def evaluate_searle(data, searle, encode_with_pseudo_tokens, clip_model,
         reference_id = item["reference_id"]
         caption = item["caption"]
         target_id = item["target_id"]
-        positives = {target_id}
+        positives = set(item.get("positives") or [item["target_id"]])
         caption_full = "a photo of $" + caption
 
         ref_feat_raw = image_features_cache_raw.get(reference_id)
@@ -976,7 +1020,7 @@ def evaluate_searle(data, searle, encode_with_pseudo_tokens, clip_model,
                 text_feat = encode_with_pseudo_tokens(clip_model, tokenized, pseudo_tokens)
                 text_feat = F.normalize(text_feat.float(), dim=-1).cpu()
 
-            ranked_idx = rank_by_similarity(text_feat, gallery_feats)
+            ranked_idx = rank_by_similarity(text_feat, gallery_ids, q, exclude_id=item["reference_id"], id2idx=id2idx)
             ranked_ids = [gallery_ids[i] for i in ranked_idx]
             update_metrics(results, ranked_ids, positives)
             total += 1
@@ -998,7 +1042,7 @@ def evaluate_generic(data, image_folder, image_features_cache, gallery_ids, gall
         reference_id = item["reference_id"]
         caption_full = "a photo of " + item["caption"]
         target_id = item["target_id"]
-        positives = {target_id}
+        positives = set(item.get("positives") or [item["target_id"]])
 
         if reference_id not in ref_cache:
             ref_img = load_image(image_folder, reference_id,dataset_type)
@@ -1017,8 +1061,9 @@ def evaluate_generic(data, image_folder, image_features_cache, gallery_ids, gall
         sims_txt = torch.matmul(gallery_feats, text_feat.squeeze(0).float().T)
         sims_ref = torch.matmul(gallery_feats, ref_feat.squeeze(0).float().T)
         sims = alpha * sims_txt + (1.0 - alpha) * sims_ref
-
-        ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
+        mask_reference_(sims, id2idx, item["reference_id"])
+        ranked_idx = torch.argsort(sims, descending=True)
+        #ranked_idx = torch.argsort(sims.squeeze(-1), descending=True).cpu().tolist()
         ranked_ids = [gallery_ids[i] for i in ranked_idx]
 
         update_metrics(results, ranked_ids, positives)
@@ -1065,7 +1110,7 @@ def evaluate_clip_alphas_separate(data, clip_model, image_features_cache,
         for item in tqdm(data, desc=f"CLIP-sep alpha={alpha:.2f}"):
             reference_id = item["reference_id"]
             target_id = item["target_id"]
-            positives = {target_id}
+            positives = set(item.get("positives") or [item["target_id"]])
             caption_full = "a photo of " + item["caption"]
 
             text_feat = text_cache.get((reference_id, caption_full))
@@ -1085,8 +1130,9 @@ def evaluate_clip_alphas_separate(data, clip_model, image_features_cache,
 
             # ترکیب بر اساس alpha
             sims = alpha * sims_txt_n + (1.0 - alpha) * sims_ref_n
-
-            ranked_idx = torch.argsort(sims, descending=True).cpu().tolist()
+            mask_reference_(sims, id2idx, item["reference_id"])
+            ranked_idx = torch.argsort(sims, descending=True)
+            #ranked_idx = torch.argsort(sims, descending=True).cpu().tolist()
             ranked_ids = [gallery_ids[i] for i in ranked_idx]
 
             update_metrics(results, ranked_ids, positives)
@@ -1435,7 +1481,7 @@ def main():
                 print(
                     f"{key:<20} {r['mrr']:<9f} {r['map5']:<9f} {r['map10']:<9f} {r['map50']:<9f} "
                     f"{r['prec1']:<9f} {r['prec5']:<9f} {r['prec10']:<9f} {r['prec50']:<9f} "
-                    f"{r['rec1']:<9f} {r['rec5']:<9f} {r['rec10']:<9f} {r['rec10']:<9f} {r['rec50']:<9f}")
+                    f"{r['rec1']:<9f} {r['rec5']:<9f} {r['rec10']:<9f} {r['rec50']:<9f}")
 
     for model_name in ["Searle", "Qwen", "Blip", "LLaVA","SigLIP", "clip_sep"]:
         if model_name in all_results:
