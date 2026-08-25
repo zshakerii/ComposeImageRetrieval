@@ -1002,6 +1002,159 @@ def load_clip_image_cache(
         return None
 
 
+
+# ---------------------------------------------------------------------------
+# BLIP (BlipForImageTextRetrieval): ITC embeddings + optional ITM reranking
+# ---------------------------------------------------------------------------
+BLIP_TEXT_MAX_LEN = 40
+
+
+def load_blip_model(model_path: str):
+    if not model_path:
+        raise ValueError("--blip_path is required for blip")
+
+    from transformers import AutoProcessor, BlipForImageTextRetrieval
+
+    if not os.path.isdir(model_path):
+        raise FileNotFoundError(f"BLIP model directory not found: {model_path}")
+    if not os.path.isfile(os.path.join(model_path, "config.json")):
+        raise FileNotFoundError(
+            f"config.json is missing in the BLIP model directory: {model_path}"
+        )
+
+    dtype = torch.float16 if DEVICE.type == "cuda" else torch.float32
+
+    processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+    model = BlipForImageTextRetrieval.from_pretrained(
+        model_path,
+        torch_dtype=dtype,
+        local_files_only=True,
+    )
+    model.to(DEVICE).eval()
+    model.requ torch.float16 if DEVICE.type == "cuda" else torch.float32
+
+    processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+    model = BlipForImageTextRetrieval.from_pretrained(
+        model_path,
+        torch_dtype=dtype,
+        local_files_only=True,
+    )
+    model.to(DEVICE).eval()
+    model.requires_grad_(False)
+    pixel_values = processor(images=images, return_tensors="pt")["pixel_values"]
+    pixel_values = pixel_values.to(device=DEVICE, dtype=model.dtype)
+
+    hidden = model.vision_model(pixel_values=pixel_values)[0]
+    feats = model.vision_proj(hidden[:, 0, :])
+    return F.normalize(feats.float(), dim=-1).cpu()
+
+
+
+@torch.inference_mode()
+def blip_image_embedding(image: Image.Image, model, processor) -> torch.Tensor:
+    return _blip_forward_image_features([image], model, processor)
+
+
+@torch.inference_mode()
+def blip_text_embedding(text: str, model, processor) -> torch.Tensor:
+    tokens = processor(
+        text=[text],
+        padding="max_length",
+        truncation=True,
+        max_length=BLIP_TEXT_MAX_LEN,
+        return_tensors="pt",
+    ).to(DEVICE)
+
+    hidden = model.text_encoder(
+        input_ids=tokens["input_ids"],
+        attention_mask=tokens["attention_mask"],
+    )[0]
+    feats = model.text_proj(hidden[:, 0, :])
+    return F.normalize(feats.float(), dim=-1).cpu()
+
+
+def build_blip_image_cache(
+    image_ids,
+    image_folder,
+    model,
+    processor,
+    cache_dir: str,
+    dataset: str,
+    split: str,
+    model_key: str,
+    batch_size: int = 16,
+    force_rebuild: bool = False,
+):
+    cache_path = model_image_cache_path(
+        cache_dir,
+        dataset,
+        split,
+        model_key,
+    )
+
+    if not force_rebuild:
+        cached = load_generic_image_cache(
+            cache_path,
+            list(image_ids),
+            dataset,
+            split,
+            model_key,
+        )
+        if cached is not None:
+            print(f"Loaded BLIP image embeddings from cache: {cache_path}")
+            print(f"Cached images: {len(cached)}")
+            return cached
+
+    def encode_batch(images):
+        return _blip_forward_image_features(list(images), model, processor)
+
+    return build_generic_image_cache(
+        list(image_ids),
+        image_folder,
+        encode_batch,
+        cache_path,
+        model_key,
+        dataset,
+        split,
+        batch_size=batch_size,
+        force_rebuild=force_rebuild,
+    )
+
+
+@torch.inference_mode()
+def blip_itm_rerank(
+    caption: str,
+    candidate_ids: List[str],
+    image_folder: str,
+    model,
+    processor,
+    batch_size: int = 8,
+) -> torch.Tensor:
+    """Cross-attention ITM scores for one caption against candidate gallery ids."""
+    scores: List[torch.Tensor] = []
+
+    for start in range(0, len(candidate_ids), batch_size):
+        chunk = candidate_ids[start:start + batch_size]
+        images = [
+            Image.open(resolve_image_path(image_folder, image_id)).convert("RGB")
+            for image_id in chunk
+        ]
+        inputs = processor(
+            images=images,
+            text=[caption] * len(chunk),
+            padding="max_length",
+            truncation=True,
+            max_length=BLIP_TEXT_MAX_LEN,
+            return_tensors="pt",
+        ).to(DEVICE)
+        inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
+
+        out = model(**inputs, use_itm_head=True)
+        scores.append(out.itm_score.float().softmax(dim=-1)[:, 1].cpu())
+
+    return torch.cat(scores, dim=0) if scores else torch.empty(0)
+
+
 # ============================================================
 # CLIP
 # ============================================================
@@ -1342,6 +1495,11 @@ def build_generic_image_cache(
 # ============================================================
 # OpenCLIP
 # ============================================================
+
+
+
+
+
 
 
 def load_searle_model(
@@ -2572,7 +2730,7 @@ def main():
         "--models",
         nargs="+",
         default=["clip"],
-        choices=["clip", "searle", "open_clip", "siglip", "clip_beta"],
+        choices=["clip", "searle", "open_clip", "siglip", "clip_beta","blip"],
     )
 
     parser.add_argument(
@@ -2614,6 +2772,16 @@ def main():
     )
 
     parser.add_argument(
+        "--blip_path",
+        default=None,
+        help="Local BlipForImageTextRetrieval directory (offline load).",
+    )
+    parser.add_argument(
+        "--blip_model_key",
+        default="blip_itm_base_coco",
+        help="Cache key for BLIP embeddings; must differ per checkpoint.",
+    )
+    parser.add_argument(
         "--searle_path",
         default=r"C:\Users\user\Desktop\Python\ImageRetrieval\models_download\SEARLE",
         help="Local SEARLE repository path.",
@@ -2623,7 +2791,18 @@ def main():
         default="./embedding_cache",
         help="Directory used to store persistent image-embedding caches.",
     )
-
+    parser.add_argument(
+        "--blip_batch_size",
+        type=int,
+        default=16,
+        help="Batch size for BLIP full-gallery image embeddings.",
+    )
+    parser.add_argument(
+        "--blip_itm_topk",
+        type=int,
+        default=0,
+        help="If > 0, rerank the top-k ITC candidates with the BLIP ITM head.",
+    )
     parser.add_argument(
         "--open_clip_batch_size",
         type=int,
